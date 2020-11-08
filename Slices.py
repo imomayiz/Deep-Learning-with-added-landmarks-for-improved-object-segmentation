@@ -1,4 +1,3 @@
-
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import pandas as pd
@@ -6,6 +5,7 @@ import numpy as np
 from vtk import vtkStructuredPointsReader
 from vtk.util import numpy_support as VN
 from vtk.util.numpy_support import vtk_to_numpy
+import os
 
 # Plot the data
 reader = vtkStructuredPointsReader()
@@ -42,11 +42,9 @@ ax.set_zlabel('Z axis')
 ax.view_init(90, 90)
 plt.show()
 
-# Plot som slices of the fat data and 
-# save 20 slices of data and true segmentation of liver
+# Save 20 slices of data and true segmentation of liver
 reader = vtkStructuredPointsReader()
 reader.SetFileName("500017_fat_content.vtk")
-#reader.SetFileName("binary_liver500017.vtk")
 reader.ReadAllVectorsOn()
 reader.ReadAllScalarsOn()
 reader.Update()
@@ -58,6 +56,10 @@ array2 = vtk_to_numpy(scalars2)
 
 tmp = np.array(range(x))
 planeIndex = np.array([])
+
+if(not os.path.exists('./fat')):
+    os.mkdir('./fat')
+
 for j in range(z):
     planeIndex = np.append(planeIndex,tmp+j*x*y)
 for n in range(80, 100):
@@ -65,11 +67,33 @@ for n in range(80, 100):
     for i in range(x*z):
         plane[i] = array2[int(planeIndex[i])+n*x]
     plane = plane.reshape(x, z)
-    plt.imshow(plane, cmap="gray")
-    plt.axis('off')
-    plt.show()
-    np.savetxt('./fat/data%d.csv' % (n), plane, delimiter=',')
+    np.savetxt('./fat/data%d.csv' % (n), plane, delimiter=',')    
+    
+reader = vtkStructuredPointsReader()
+reader.SetFileName("binary_liver500017.vtk")
+reader.ReadAllVectorsOn()
+reader.ReadAllScalarsOn()
+reader.Update()
+data2 = reader.GetOutput()
+x,y,z   = data2.GetDimensions()
 
+scalars2 = data2.GetPointData().GetScalars()
+array2 = vtk_to_numpy(scalars2)
+
+tmp = np.array(range(x))
+planeIndex = np.array([])
+
+if(not os.path.exists('./liver')):
+    os.mkdir('./liver')
+
+for j in range(z):
+    planeIndex = np.append(planeIndex,tmp+j*x*y)
+for n in range(80, 100):
+    plane = np.zeros(x*z)
+    for i in range(x*z):
+        plane[i] = array2[int(planeIndex[i])+n*x]
+    plane = plane.reshape(x, z)
+    np.savetxt('./liver/data%d.csv' % (n), plane, delimiter=',')
 
 # Plot one slice with masked liver from true segmentation
 plane1 = np.loadtxt('./fat/data%d.csv' % (90), delimiter=',')
