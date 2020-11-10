@@ -8,6 +8,9 @@ Research project in Computational Science, IT department, Uppsala University.
 - Run a first training experiment using U-Net model from **milesial/Pytorch-UNet** with default parameters *5 epochs, 0.01 lr, batch-size 1*
 - Results: Validation dice score ~ 0.73
 
-**Ongoing**: 
-- Data augmentation: extract multiscale patches
-- Investigate how to extract the right slices (relevant direction to cut on etc)
+### Week 3
+**TO DO**: 
+- Data augmentation using Pytorch library
+- Data augmentation by extracting multiscale patches
+- Investigate how to make dice coff robust to particular cases
+- ...
