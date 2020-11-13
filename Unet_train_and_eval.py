@@ -110,7 +110,7 @@ class UNet(nn.Module):
 
 # define the model
 model = UNet()
-if(0):#torch.cuda.is_available()):
+if(torch.cuda.is_available()):
     model.to(device='cuda')
 dir_checkpoint = 'checkpoints/'
 if(not os.path.exists(dir_checkpoint)):
@@ -142,7 +142,7 @@ for epoch in range(epochs):
         print('hej')
         x_train = batch[0][:,0,32:224,32:224].unsqueeze(1)
         y_tr = y_train[(idx*btch_siz):((idx+1)*btch_siz)]
-        if(0):#torch.cuda.is_available()):
+        if(torch.cuda.is_available()):
             x_train = x_train.to(device='cuda', dtype=torch.float32)
             y_tr = y_tr.to(device='cuda', dtype=torch.float32)
         y_pred = model(x_train)
