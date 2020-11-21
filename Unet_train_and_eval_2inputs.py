@@ -45,7 +45,7 @@ class UNet(nn.Module):
 
         # self.max_pool_2x2_3d = nn.MaxPool3d(kernel_size=(2,1,2), stride=(2,1,2))
         self.max_pool_2x2 = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.down_conv_1 = double_conv_3d(1, 64)
+        self.down_conv_1 = double_conv_3d(2, 64)
         self.down_conv_2 = double_conv(64, 128)
         self.down_conv_3 = double_conv(128, 256)
         self.down_conv_4 = double_conv(256, 512)
@@ -114,8 +114,8 @@ class UNet(nn.Module):
 
 # define the model
 model = UNet()
-# model.to(device='cuda')
-dir_checkpoint = 'checkpoints/'
+model.to(device='cuda')
+dir_checkpoint = 'checkpoints_3d/'
 if(not os.path.exists(dir_checkpoint)):
     os.mkdir(dir_checkpoint)
 
@@ -126,38 +126,7 @@ loss_fn = torch.nn.BCEWithLogitsLoss()
 #loss_fn = torch.nn..BCEWithLogitsLoss(reduction='sum')
 
 # choose optimizer
-optimizer = torch.optim.Adam(model.parameters(),lr=0.001)
-
-# load data
-# btch_siz = 10
-# val_percent = 0.15
-# dataset = torchvision.datasets.ImageFolder(root='../data', transform=transforms.ToTensor())
-# n_val = int(len(dataset) * val_percent)
-# n_train = len(dataset) - n_val
-# train, val = random_split(dataset, [n_train, n_val])
-# loaded_train = DataLoader(train, batch_size=btch_siz, shuffle=True,)
-# loaded_eval = DataLoader(val, batch_size=1, shuffle=False,)
-
-# load vtk fat data
-filename = "../data/500017_fat_content.vtk"
-reader = vtk.vtkGenericDataObjectReader()
-reader.SetFileName(filename)
-reader.Update()
-data = vtk_to_numpy(reader.GetOutput().GetPointData().GetScalars())
-x_range, y_range, z_range = reader.GetOutput().GetDimensions()
-data = data.reshape(x_range,y_range,z_range)
-grid_body = torch.from_numpy(data)
-
-# load vtk binary data
-filename = "../data/binary_liver500017.vtk"
-reader = vtk.vtkGenericDataObjectReader()
-reader.SetFileName(filename)
-reader.Update()
-data = vtk_to_numpy(reader.GetOutput().GetPointData().GetScalars())
-x_range, y_range, z_range = reader.GetOutput().GetDimensions()
-data = data.reshape(x_range,y_range,z_range)
-grid_binary = torch.from_numpy(data)
-grid_binary = grid_binary.type(torch.DoubleTensor)
+optimizer = torch.optim.Adam(model.parameters(),lr=0.00005)
 
 def chunks(lst, n):
     """Yield successive n-sized chunks from lst."""
@@ -165,20 +134,21 @@ def chunks(lst, n):
         yield lst[i:i + n]
 
 def load_vtk(file_number):
+    """Loads .vtk file into tensor given file number"""
     file_number = str(file_number).zfill(3)
     reader = vtk.vtkGenericDataObjectReader()
-    reader.SetFileName("../data/500%s_fat_content.vtk" %(file_number))
+    reader.SetFileName("../../Project course/500%s_fat_content.vtk" %(file_number))
     reader.Update()
     data_fat = vtk_to_numpy(reader.GetOutput().GetPointData().GetScalars())
     x_range, y_range, z_range = reader.GetOutput().GetDimensions()
     data_fat = data_fat.reshape(x_range,y_range,z_range)
 
-    reader.SetFileName("../data/500%s_fat_content.vtk" %(file_number))
+    reader.SetFileName("../../Project course/500%s_wat_content.vtk" %(file_number))
     reader.Update()
     data_wat = vtk_to_numpy(reader.GetOutput().GetPointData().GetScalars())
     data_wat = data_wat.reshape(x_range,y_range,z_range)
 
-    reader.SetFileName("../data/binary_liver500%s.vtk" %(file_number))
+    reader.SetFileName("../../Project course/binary_liver500%s.vtk" %(file_number))
     reader.Update()
     data_liv = vtk_to_numpy(reader.GetOutput().GetPointData().GetScalars())
     data_liv = data_liv.reshape(x_range,y_range,z_range)
@@ -193,16 +163,20 @@ def load_vtk(file_number):
 
 body_array = []
 for i in range(500):
-    if(os.path.exists("../data/500%s_fat_content.vtk" %(str(i).zfill(3)))):
+    if(os.path.exists("../../Project course/500%s_fat_content.vtk" %(str(i).zfill(3)))):
         body_array.append(load_vtk(i))
 
 # print(torch.sum(torch.sum(body_array[0][2,:,:,:],dim=0),dim=1)>0)
+
+# miss classification in the .vtk file
+body_array[1][2,157,240,109] = 0
 
 body_array_new = []
 
 for i in range(len(body_array)):
     my_list = torch.sum(torch.sum(body_array[i][2,:,:,:],dim=0),dim=1)>0
     indices = [j for j, x in enumerate(my_list) if x == True]
+    # print(str(min(indices)) + ' ' +str(max(indices)))
     body_array_new.append(body_array[i][:,:,min(indices)-2:max(indices)+3,:])
 
 # print(body_array_new[0].size())
@@ -215,26 +189,35 @@ for i in range(len(body_array_new)):
     for j in range(body_array_new[i].size()[2]-4):
         smart_list.append([i,j])
 
+# print(smart_list)
 batch_size = 3
 
-x_train = torch.zeros(batch_size,1,x_range,5,z_range)
-y_train = torch.zeros(batch_size,1,x_range,z_range)
-print(x_train.size())
+x_range,y_range,z_range = 256,252,256
+
+x_train = torch.zeros(batch_size,2,x_range,5,z_range).to(device='cuda')
+y_train = torch.zeros(batch_size,1,x_range,z_range).to(device='cuda')
+# print(x_train.size())
+
+train_list = smart_list[:int(len(smart_list)*0.85)]
+eval_list = smart_list[int(len(smart_list)*0.85):]
 
 # train model
-for epoch in range(1000):
-    random.shuffle(smart_list)
-    batch_list = list(chunks(smart_list,batch_size))
-    print(epoch)
+for epoch in range(2000):
+    print('Epoch ' + str(epoch))
+    random.shuffle(train_list)
+    batch_list = list(chunks(train_list,batch_size))
+    # print(batch_list)
     epoch_loss = 0
     for batch in batch_list:
-        print(batch)
+        # print(batch)
         # x_train = grid_body[:,batch:batch+5,:].unsqueeze(0).unsqueeze(0).to(device='cuda')
-        for i in range(batch_size):
-            x_train[i] = body_array_new[batch[i][0]][0,:,batch[i][1]:batch[i][1]+5,:].unsqueeze(0)
+        for i in range(len(batch)):
+            # print(batch[i][0])
+            # print(body_array_new.size())
+            x_train[i] = body_array_new[batch[i][0]][0:2,:,batch[i][1]:batch[i][1]+5,:]
             y_train[i] = body_array_new[batch[i][0]][2,:,batch[i][1]+2,:].unsqueeze(0)
-        print(y_train.size())
-        print(x_train.size())
+        # print(y_train.size())
+        # print(x_train.size())
         y_pred = model(x_train)
         # loss = loss_fn(y_pred.squeeze(3),grid_binary[:,batch+1,:].unsqueeze(0).unsqueeze(0).to(device='cuda'))
         loss = loss_fn(y_pred,y_train)
@@ -242,9 +225,22 @@ for epoch in range(1000):
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-    plt.imsave(f'images/img{epoch}.png',y_pred.detach().cpu().numpy()[0,0,:,:],cmap='gray')
-    print(epoch_loss)
+    # plt.imsave(f'images/img{epoch}.png',y_pred.detach().cpu().numpy()[0,0,:,:],cmap='gray')
+    print('Loss ' + str(epoch_loss))
 
+    if (epoch % 99 == 0):
+        # save the state of the model after each epoch and print the cambined loss function over the epoch
+        torch.save(model.state_dict(), dir_checkpoint + f'CP_epoch{epoch + 1}.pth')
+
+# eval model
+dice = 0
+model.eval()
+for sample in eval_list:
+    x_eval = body_array_new[sample[0]][0:2,:,sample[1]:sample[1]+5,:].unsqueeze(0).to(device='cuda')
+    y_eval = body_array_new[sample[0]][2,:,sample[1]+2,:].to(device='cuda')
+    y_pred = model(x_eval).squeeze(0).squeeze(0)
+    dice += sum(sum( (y_eval==1) & (y_pred>0.5) ))*2/( sum(sum(y_eval)) +sum(sum(y_pred>0.5)) )
+print('dice ' + str(dice.item()/len(eval_list)))
 
 '''
 
