@@ -8,6 +8,7 @@ import pandas as pd
 import numpy as np
 import torchvision
 import random
+import math
 from torch.utils.data import Dataset, DataLoader, random_split
 from torchvision import transforms, utils
 
@@ -43,7 +44,6 @@ class UNet(nn.Module):
     def __init__(self):
         super(UNet, self).__init__()
 
-        # self.max_pool_2x2_3d = nn.MaxPool3d(kernel_size=(2,1,2), stride=(2,1,2))
         self.max_pool_2x2 = nn.MaxPool2d(kernel_size=2, stride=2)
         self.down_conv_1 = double_conv_3d(2, 64)
         self.down_conv_2 = double_conv(64, 128)
@@ -85,9 +85,11 @@ class UNet(nn.Module):
 
         self.out = nn.Conv2d(
             in_channels = 64,
-            out_channels=1,
+            out_channels=2,
             kernel_size=1
         )
+
+        self.soft = nn.LogSoftmax(dim = 1)
 
     def forward(self, image):
         x1 = self.down_conv_1(image).squeeze(3)
@@ -110,6 +112,7 @@ class UNet(nn.Module):
         x = self.up_trans_4(x)
         x = self.up_conv_4(torch.cat([x, x1], 1))
         x = self.out(x)
+        x = self.soft(x)
         return x
 
 # define the model
@@ -120,13 +123,7 @@ if(not os.path.exists(dir_checkpoint)):
     os.mkdir(dir_checkpoint)
 
 # choose what loss function to use
-loss_fn = torch.nn.BCEWithLogitsLoss()
-#loss_fn = torch.nn.MSELoss(reduction='sum')
-#loss_fn = torch.nn.KLDivLoss(reduction='sum')
-#loss_fn = torch.nn..BCEWithLogitsLoss(reduction='sum')
-
-# choose optimizer
-optimizer = torch.optim.Adam(model.parameters(),lr=0.00005)
+loss_fn = torch.nn.NLLLoss(weight=torch.tensor([1., 2.], device='cuda'))
 
 def chunks(lst, n):
     """Yield successive n-sized chunks from lst."""
@@ -161,123 +158,102 @@ def load_vtk(file_number):
     grid = torch.from_numpy(data)
     return grid.to(dtype=torch.float32)
 
+# body_array contains all .vtk-files
 body_array = []
 for i in range(500):
     if(os.path.exists("../../Project course/500%s_fat_content.vtk" %(str(i).zfill(3)))):
         body_array.append(load_vtk(i))
 
-# print(torch.sum(torch.sum(body_array[0][2,:,:,:],dim=0),dim=1)>0)
-
 # miss classification in the .vtk file
 body_array[1][2,157,240,109] = 0
 
+# body_array_new contains all .vtk-files but is croppen to include
+# only slices in y-direction that have liver + 2 slices of margin
 body_array_new = []
-
 for i in range(len(body_array)):
     my_list = torch.sum(torch.sum(body_array[i][2,:,:,:],dim=0),dim=1)>0
     indices = [j for j, x in enumerate(my_list) if x == True]
-    # print(str(min(indices)) + ' ' +str(max(indices)))
-    body_array_new.append(body_array[i][:,:,min(indices)-2:max(indices)+3,:])
+    body_array_new.append(body_array[i][:,:,min(indices)-7:max(indices)+8,:])
 
-# print(body_array_new[0].size())
-
-# print(list(chunks(list(range(len(body_array_new))),3)))
-
+# smart_list contains index pairs of bodies and slices
 smart_list = []
-
 for i in range(len(body_array_new)):
     for j in range(body_array_new[i].size()[2]-4):
         smart_list.append([i,j])
+random.shuffle(smart_list)
 
-# print(smart_list)
-batch_size = 3
-
+# size of scans
 x_range,y_range,z_range = 256,252,256
 
+# prepare torch tensors and assign index pairs for
+# training and evaluation
+batch_size=4
 x_train = torch.zeros(batch_size,2,x_range,5,z_range).to(device='cuda')
-y_train = torch.zeros(batch_size,1,x_range,z_range).to(device='cuda')
-# print(x_train.size())
+y_train = torch.zeros(batch_size,x_range,z_range).to(device='cuda')
+train_share = 0.9
+train_list = smart_list[:int(len(smart_list)*train_share)]
+eval_list = smart_list[int(len(smart_list)*train_share):]
 
-train_list = smart_list[:int(len(smart_list)*0.85)]
-eval_list = smart_list[int(len(smart_list)*0.85):]
+# save evaluation index pairs for future evaluation
+f = open("eval_list.txt", "w")
+f.write(str(eval_list))
+f.close()
+
+# define optimizer
+learn_rate = 0.0001
+optimizer = torch.optim.Adam(model.parameters(),lr=learn_rate)
 
 # train model
-for epoch in range(2000):
+for epoch in range(201):
+
     print('Epoch ' + str(epoch))
+    epoch_loss = 0
+
+    # update optimizer learning rate every 20 epoch
+    if epoch % 20 == 0:
+        optimizer = torch.optim.Adam(model.parameters(),lr=learn_rate)
+        learn_rate/=2
+        print('Learn rate halved')
+
     random.shuffle(train_list)
     batch_list = list(chunks(train_list,batch_size))
-    # print(batch_list)
-    epoch_loss = 0
+
     for batch in batch_list:
-        # print(batch)
-        # x_train = grid_body[:,batch:batch+5,:].unsqueeze(0).unsqueeze(0).to(device='cuda')
         for i in range(len(batch)):
-            # print(batch[i][0])
-            # print(body_array_new.size())
             x_train[i] = body_array_new[batch[i][0]][0:2,:,batch[i][1]:batch[i][1]+5,:]
-            y_train[i] = body_array_new[batch[i][0]][2,:,batch[i][1]+2,:].unsqueeze(0)
-        # print(y_train.size())
-        # print(x_train.size())
+            y_train[i] = body_array_new[batch[i][0]][2,:,batch[i][1]+2,:]
         y_pred = model(x_train)
-        # loss = loss_fn(y_pred.squeeze(3),grid_binary[:,batch+1,:].unsqueeze(0).unsqueeze(0).to(device='cuda'))
-        loss = loss_fn(y_pred,y_train)
+        loss = loss_fn(y_pred,y_train.to(dtype=torch.long))
         epoch_loss += loss.item()
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-    # plt.imsave(f'images/img{epoch}.png',y_pred.detach().cpu().numpy()[0,0,:,:],cmap='gray')
+
     print('Loss ' + str(epoch_loss))
 
-    if (epoch % 99 == 0):
-        # save the state of the model after each epoch and print the cambined loss function over the epoch
+    # save model and print dice score every 10 epoch
+    if (epoch % 10 == 0):
         torch.save(model.state_dict(), dir_checkpoint + f'CP_epoch{epoch + 1}.pth')
+        dice = 0
+        model.eval()
+        for sample in eval_list:
+            x_eval = body_array_new[sample[0]][0:2,:,sample[1]:sample[1]+5,:].unsqueeze(0).to(device='cuda')
+            y_eval = body_array_new[sample[0]][2,:,sample[1]+2,:].to(device='cuda')
+            y_pred = model(x_eval).squeeze(0)[1].exp()
+            if( sum(sum(y_eval))+sum(sum(y_pred>0.5)) == 0 ):
+                dice += 1
+            else:
+                dice += sum(sum( (y_eval==1) & (y_pred>0.5) ))*2/( sum(sum(y_eval)) +sum(sum(y_pred>0.5)) )
+        print('dice ' + str(dice.item()/len(eval_list)))
+        model.train()
 
-# eval model
-dice = 0
-model.eval()
-for sample in eval_list:
-    x_eval = body_array_new[sample[0]][0:2,:,sample[1]:sample[1]+5,:].unsqueeze(0).to(device='cuda')
-    y_eval = body_array_new[sample[0]][2,:,sample[1]+2,:].to(device='cuda')
-    y_pred = model(x_eval).squeeze(0).squeeze(0)
-    dice += sum(sum( (y_eval==1) & (y_pred>0.5) ))*2/( sum(sum(y_eval)) +sum(sum(y_pred>0.5)) )
-print('dice ' + str(dice.item()/len(eval_list)))
 
-'''
 
-# train model
-epochs = 40
-model.train()
-for epoch in range(epochs):
-    idx = 0
-    epoch_loss = 0
-    for batch in loaded_train:
-        x_train = batch[0][:,0:2,32:224,32:224]
-        y_tr = batch[0][:,2,32:224,32:224].unsqueeze(1)
-        if(torch.cuda.is_available()):
-            x_train = x_train.to(device='cuda', dtype=torch.float32)
-            y_tr = y_tr.to(device='cuda', dtype=torch.float32)
-        y_pred = model(x_train)
-        loss = loss_fn(y_pred,y_tr)
-        epoch_loss += loss.item()
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        idx = idx + 1
-   
-    # save the state of the model after each epoch and print the cambined loss function over the epoch
-    torch.save(model.state_dict(), dir_checkpoint + f'CP_epoch{epoch + 1}.pth')
-    print(f'Created checkpoint {epoch + 1}')
-    print(f'The loss of the epoch was: {epoch_loss}')
 
-model.to(device='cpu')
-model.eval()
-dice = 0
-for batch in loaded_eval:
-    x_eval = batch[0][:,0:2,32:224,32:224]
-    y_eval = batch[0][:,2,32:224,32:224]
-    yp = model(x_eval).squeeze(0).squeeze(0).detach().numpy()
-    y_eval = y_eval.squeeze(0).detach().numpy()
-    dice += sum(sum( (y_eval==1) & (yp>0.5) ))*2/( sum(sum(y_eval)) +sum(sum(yp>0.5)) )
-print(dice/n_val)
 
-'''
+
+
+
+
+
+
