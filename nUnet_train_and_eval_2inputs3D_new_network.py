@@ -166,7 +166,7 @@ for l in range(1,51):
     distance_map2 = 1/distance_map2
 
     distance_map = distance_map1 + distance_map2
-    distance_map = distance_map/distance_map[X1,Y1,Z1]
+    distance_map = distance_map/distance_map[X1,Z1,Y1]
     maps_list[l-1] = distance_map
     maps_list = np.asarray(maps_list)
 
