@@ -173,7 +173,7 @@ body_array_new = []
 for i in range(len(body_array)):
     my_list = torch.sum(torch.sum(body_array[i][2,:,:,:],dim=0),dim=1)>0
     indices = [j for j, x in enumerate(my_list) if x == True]
-    body_array_new.append(body_array[i][:,:,min(indices)-7:max(indices)+8,:])
+    body_array_new.append(body_array[i][:,:,min(indices)-2:max(indices)+3,:])
 
 # smart_list contains index pairs of bodies and slices
 smart_list = []
