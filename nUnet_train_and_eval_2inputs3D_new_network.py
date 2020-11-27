@@ -157,8 +157,9 @@ for l in range(1,51):
     for i in range(256):
          for j in range(256):
             for k in range(256):
-             distance_map1[i,j,k] = abs(i-X1) + abs(j-Y1) + abs(k-Z1)
-             distance_map2[i,j,k] = abs(i-X2) + abs(j-Y2) + abs(k-Z2)
+             distance_map1[i][k][j] = abs(i-X1) + abs(j-Y1) + abs(k-Z1)
+             distance_map2[i][k][j] = abs(i-X2) + abs(j-Y2) + abs(k-Z2)
+
     distance_map1 = distance_map1 + 1
     distance_map1 = 1/distance_map1
 
@@ -166,10 +167,11 @@ for l in range(1,51):
     distance_map2 = 1/distance_map2
 
     distance_map = distance_map1 + distance_map2
-    distance_map = distance_map/distance_map[X1,Z1,Y1]
+    distance_map = distance_map/distance_map[X1][Z1][Y1]
+
     maps_list[l-1] = distance_map
     maps_list = np.asarray(maps_list)
-
+    
 #Corresponding image number to each distance map in maps_list
 nlandmark = np.array([17,18,22,26,51,53,56,61,62,75,77,86,117,124,158,159,167,179,204,205,235,241,242,253,268,280,281,288,291,297,304,316,318,321,327,346,347,348,354,357,358,379,395,403,406,424,429,433,473,487])
 
