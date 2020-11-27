@@ -157,9 +157,8 @@ for l in range(1,51):
     for i in range(256):
          for j in range(256):
             for k in range(256):
-             distance_map1[i][k][j] = abs(i-X1) + abs(j-Y1) + abs(k-Z1)
-             distance_map2[i][k][j] = abs(i-X2) + abs(j-Y2) + abs(k-Z2)
-
+             distance_map1[i,j,k] = abs(i-X1) + abs(j-Y1) + abs(k-Z1)
+             distance_map2[i,j,k] = abs(i-X2) + abs(j-Y2) + abs(k-Z2)
     distance_map1 = distance_map1 + 1
     distance_map1 = 1/distance_map1
 
@@ -167,11 +166,11 @@ for l in range(1,51):
     distance_map2 = 1/distance_map2
 
     distance_map = distance_map1 + distance_map2
-    distance_map = distance_map/distance_map[X1][Z1][Y1]
-
+    distance_map = distance_map/distance_map[X1,Z1,Y1]
     maps_list[l-1] = distance_map
     maps_list = np.asarray(maps_list)
-    
+    print('One map created')
+
 #Corresponding image number to each distance map in maps_list
 nlandmark = np.array([17,18,22,26,51,53,56,61,62,75,77,86,117,124,158,159,167,179,204,205,235,241,242,253,268,280,281,288,291,297,304,316,318,321,327,346,347,348,354,357,358,379,395,403,406,424,429,433,473,487])
 
@@ -209,6 +208,7 @@ body_array = []
 for i in range(500):
     if(os.path.exists("../../Project course/500%s_fat_content.vtk" %(str(i).zfill(3)))):
         body_array.append(load_vtk(i))
+        print('data added')
 
 # miss classification in the .vtk file
 body_array[1][2,157,240,109] = 0
@@ -218,9 +218,8 @@ body_array[1][2,157,240,109] = 0
 body_array_new = []
 for i in range(len(body_array)):
     my_list = torch.sum(torch.sum(body_array[i][2,:,:,:],dim=0),dim=1)>0
-    indices = [j for j, x in enumerate(my_list) if x == True]
-    body_array_new.append(body_array[i][:,:,min(indices)-2:max(indices)+3,:])
-
+    #indices = [j for j, x in enumerate(my_list) if x == True]
+    body_array_new.append(torch.cat([body_array[i][:,:,min(indices)-2:max(indices)+3,:], torch.from_numpy(np.asarray(maps_list[i][:,min(indices)-2:max(indices)+3,:])).unsqueeze(0)],0))
 # smart_list contains index pairs of bodies and slices
 smart_list = []
 for i in range(len(body_array_new)):
@@ -235,7 +234,7 @@ x_range,y_range,z_range = 256,252,256
 # training and evaluation
 batch_size=4
 x_train = torch.zeros(batch_size,3,x_range,5,z_range).to(device='cuda')
-y_train = torch.zeros(batch_size,1,x_range,z_range).to(device='cuda')
+y_train = torch.zeros(batch_size,x_range,z_range).to(device='cuda')
 train_share = 0.9
 train_list = smart_list[:int(len(smart_list)*train_share)]
 eval_list = smart_list[int(len(smart_list)*train_share):]
@@ -266,9 +265,8 @@ for epoch in range(201):
 
     for batch in batch_list:
         for i in range(len(batch)):
-            x_train[i,0:2,:,:] = body_array_new[batch[i][0]][0:2,:,batch[i][1]:batch[i][1]+5,:]
-            x_train[i,2,:,:] = torch.from_numpy(np.asarray(maps_list[batch[i][0]]))
-            y_train[i] = body_array_new[batch[i][0]][2,:,batch[i][1]+2,:].unsqueeze(0)
+            x_train[i,0:3,:,:] = body_array_new[batch[i][0]][0:3,:,batch[i][1]:batch[i][1]+5,:]
+            y_train[i] = body_array_new[batch[i][0]][3,:,batch[i][1]+2,:].unsqueeze(0)
         y_pred = model(x_train)
         loss = loss_fn(y_pred,y_train.to(dtype=torch.long))
         epoch_loss += loss.item()
@@ -284,10 +282,9 @@ for epoch in range(201):
         dice = 0
         model.eval()
         for sample in eval_list:
-            x_eval[0,0:2,:,:] = body_array_new[sample[0]][0:2,:,sample[1]:sample[1]+5,:].unsqueeze(0).to(device='cuda')
-            x_eval[0,2,:,:] = torch.from_numpy(np.asarray(maps_list[sample[0]]))
-            y_eval = body_array_new[sample[0]][2,:,sample[1]+2,:].to(device='cuda')
-            y_pred = model(x_eval).squeeze(0)[1].exp()
+            x_eval = body_array_new[sample[0]][0:3,:,sample[1]:sample[1]+5,:].unsqueeze(0).to(device='cuda')
+            y_eval = body_array_new[sample[0]][3,:,sample[1]+2,:].to(device='cuda')
+            y_pred = model(x_eval.to(dtype=torch.float32)).squeeze(0)[1].exp()
             if( sum(sum(y_eval))+sum(sum(y_pred>0.5)) == 0 ):
                 dice += 1
             else:
