@@ -218,8 +218,9 @@ body_array[1][2,157,240,109] = 0
 body_array_new = []
 for i in range(len(body_array)):
     my_list = torch.sum(torch.sum(body_array[i][2,:,:,:],dim=0),dim=1)>0
-    #indices = [j for j, x in enumerate(my_list) if x == True]
+    indices = [j for j, x in enumerate(my_list) if x == True]
     body_array_new.append(torch.cat([body_array[i][:,:,min(indices)-2:max(indices)+3,:], torch.from_numpy(np.asarray(maps_list[i][:,min(indices)-2:max(indices)+3,:])).unsqueeze(0)],0))
+    body_array_new[i][2:4,:,:,:] = body_array_new[i][range(3,1,-1),:,:,:]
 # smart_list contains index pairs of bodies and slices
 smart_list = []
 for i in range(len(body_array_new)):
