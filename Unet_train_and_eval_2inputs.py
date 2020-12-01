@@ -9,6 +9,7 @@ import numpy as np
 import torchvision
 import random
 import math
+import time
 from torch.utils.data import Dataset, DataLoader, random_split
 from torchvision import transforms, utils
 
@@ -173,7 +174,7 @@ body_array_new = []
 for i in range(len(body_array)):
     my_list = torch.sum(torch.sum(body_array[i][2,:,:,:],dim=0),dim=1)>0
     indices = [j for j, x in enumerate(my_list) if x == True]
-    body_array_new.append(body_array[i][:,:,min(indices)-7:max(indices)+8,:])
+    body_array_new.append(body_array[i][:,:,min(indices)-2:max(indices)+3,:])
 
 # smart_list contains index pairs of bodies and slices
 smart_list = []
@@ -199,21 +200,20 @@ f = open("eval_list.txt", "w")
 f.write(str(eval_list))
 f.close()
 
+data_tf = torchvision.transforms.RandomCrop(128)
+
 # define optimizer
 learn_rate = 0.0001
 optimizer = torch.optim.Adam(model.parameters(),lr=learn_rate)
 
+#start timer
+start_time = time.perf_counter()
+
 # train model
 for epoch in range(201):
 
-    print('Epoch ' + str(epoch))
+    print('\nEpoch\t' + str(epoch), end='')
     epoch_loss = 0
-
-    # update optimizer learning rate every 20 epoch
-    if epoch % 20 == 0:
-        optimizer = torch.optim.Adam(model.parameters(),lr=learn_rate)
-        learn_rate/=2
-        print('Learn rate halved')
 
     random.shuffle(train_list)
     batch_list = list(chunks(train_list,batch_size))
@@ -222,14 +222,16 @@ for epoch in range(201):
         for i in range(len(batch)):
             x_train[i] = body_array_new[batch[i][0]][0:2,:,batch[i][1]:batch[i][1]+5,:]
             y_train[i] = body_array_new[batch[i][0]][2,:,batch[i][1]+2,:]
-        y_pred = model(x_train)
-        loss = loss_fn(y_pred,y_train.to(dtype=torch.long))
+        i, j, h, w = transforms.RandomCrop.get_params(y_train, output_size=(64, 64))
+        y_pred = model( torchvision.transforms.functional.crop(x_train.permute(0, 1, 3, 2, 4),i,j,h,w).permute(0, 1, 3, 2, 4) )
+        loss = loss_fn(y_pred,torchvision.transforms.functional.crop(y_train,i,j,h,w).to(dtype=torch.long))
         epoch_loss += loss.item()
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
-    print('Loss ' + str(epoch_loss))
+    print('\tLoss ' + "{:.2f}".format(epoch_loss), end='')
+    print('\tTime ' + "{:.2f}".format(time.perf_counter()-start_time), end='')
 
     # save model and print dice score every 10 epoch
     if (epoch % 10 == 0):
@@ -244,9 +246,17 @@ for epoch in range(201):
                 dice += 1
             else:
                 dice += sum(sum( (y_eval==1) & (y_pred>0.5) ))*2/( sum(sum(y_eval)) +sum(sum(y_pred>0.5)) )
-        print('dice ' + str(dice.item()/len(eval_list)))
+        print('\tDice ' + "{:.2f}".format(dice.item()/len(eval_list)), end='')
         model.train()
 
+    # update optimizer learning rate every 20 epoch
+    if epoch % 20 == 0:
+        if (epoch > 0):
+            optimizer = torch.optim.Adam(model.parameters(),lr=learn_rate)
+            learn_rate/=2
+            print('\tLR 1/' + "{:.0f}".format(1/learn_rate), end='')
+        else:
+            print('\tLR 1/' + "{:.0f}".format(1/learn_rate), end='')
 
 
 
