@@ -12,6 +12,7 @@ import math
 import time
 from torch.utils.data import Dataset, DataLoader, random_split
 from torchvision import transforms, utils
+from ast import literal_eval
 
 import vtk
 from vtk.util.numpy_support import vtk_to_numpy
@@ -86,7 +87,7 @@ class UNet(nn.Module):
 
         self.out = nn.Conv2d(
             in_channels = 64,
-            out_channels=2,
+            out_channels=3,
             kernel_size=1
         )
 
@@ -124,7 +125,7 @@ if(not os.path.exists(dir_checkpoint)):
     os.mkdir(dir_checkpoint)
 
 # choose what loss function to use
-loss_fn = torch.nn.NLLLoss(weight=torch.tensor([1., 2.], device='cuda'))
+loss_fn = torch.nn.NLLLoss(weight=torch.tensor([1., 1., 1.], device='cuda'))
 
 def chunks(lst, n):
     """Yield successive n-sized chunks from lst."""
@@ -151,10 +152,22 @@ def load_vtk(file_number):
     data_liv = vtk_to_numpy(reader.GetOutput().GetPointData().GetScalars())
     data_liv = data_liv.reshape(x_range,y_range,z_range)
 
+    reader.SetFileName("../../Project course/binary_kidneys500%s.vtk" %(file_number))
+    reader.Update()
+    data_kid = vtk_to_numpy(reader.GetOutput().GetPointData().GetScalars())
+    data_kid = data_kid.reshape(x_range,y_range,z_range)
+
     data = np.zeros(3*x_range*y_range*z_range).reshape(3,x_range,y_range,z_range)
     data[0] = data_fat
     data[1] = data_wat
-    data[2] = data_liv
+    data[2] = data_liv + 2*data_kid
+    
+    # print(data_liv.shape)
+    # print(data_kid.shape)
+    print("----------")
+    print(sum(sum(sum((data_liv == 1) & (data_kid == 1)))))
+    print(sum(sum(sum(data_kid == 1))))
+    print(sum(sum(sum(data_liv == 1))))
 
     grid = torch.from_numpy(data)
     return grid.to(dtype=torch.float32)
@@ -164,6 +177,9 @@ body_array = []
 for i in range(500):
     if(os.path.exists("../../Project course/500%s_fat_content.vtk" %(str(i).zfill(3)))):
         body_array.append(load_vtk(i))
+
+for i in range(50):
+    print(body_array[i][2,:,:,:].max())
 
 # miss classification in the .vtk file
 body_array[1][2,157,240,109] = 0
@@ -192,13 +208,22 @@ batch_size=4
 x_train = torch.zeros(batch_size,2,x_range,5,z_range).to(device='cuda')
 y_train = torch.zeros(batch_size,x_range,z_range).to(device='cuda')
 train_share = 0.9
-train_list = smart_list[:int(len(smart_list)*train_share)]
-eval_list = smart_list[int(len(smart_list)*train_share):]
+# train_list = smart_list[:int(len(smart_list)*train_share)]
+# eval_list = smart_list[int(len(smart_list)*train_share):]
+
+train_list = literal_eval(open("train_list.txt").read())
+eval_list = literal_eval(open("eval_list.txt").read())
+
+# print(eval_list)
 
 # save evaluation index pairs for future evaluation
-f = open("eval_list.txt", "w")
-f.write(str(eval_list))
-f.close()
+# f = open("eval_list.txt", "w")
+# f.write(str(eval_list))
+# f.close()
+
+# f = open("train_list.txt", "w")
+# f.write(str(train_list))
+# f.close()
 
 data_tf = torchvision.transforms.RandomCrop(128)
 
@@ -208,6 +233,8 @@ optimizer = torch.optim.Adam(model.parameters(),lr=learn_rate)
 
 #start timer
 start_time = time.perf_counter()
+
+counter = 0
 
 # train model
 for epoch in range(201):
@@ -222,19 +249,40 @@ for epoch in range(201):
         for i in range(len(batch)):
             x_train[i] = body_array_new[batch[i][0]][0:2,:,batch[i][1]:batch[i][1]+5,:]
             y_train[i] = body_array_new[batch[i][0]][2,:,batch[i][1]+2,:]
-        i, j, h, w = transforms.RandomCrop.get_params(y_train, output_size=(64, 64))
-        y_pred = model( torchvision.transforms.functional.crop(x_train.permute(0, 1, 3, 2, 4),i,j,h,w).permute(0, 1, 3, 2, 4) )
-        loss = loss_fn(y_pred,torchvision.transforms.functional.crop(y_train,i,j,h,w).to(dtype=torch.long))
+        
+        i, j, h, w = transforms.RandomCrop.get_params(y_train, output_size=(256, 256))
+        x_train_transformed = torchvision.transforms.functional.crop(x_train.permute(0, 1, 3, 2, 4),i,j,h,w)
+        y_train_transformed = torchvision.transforms.functional.crop(y_train,i,j,h,w)
+        
+        if (counter == 0):
+            plt.imsave('transforms/x_before.png',x_train_transformed[0,0,2,:,:].cpu().numpy())
+            plt.imsave('transforms/y_before.png',y_train_transformed[0].cpu().numpy())
+        
+        angle, translations, scale, shear = torchvision.transforms.RandomAffine.get_params(degrees=(0,0),scale_ranges=(1,1),shears=(0,0),translate=(0,0),img_size=(256,256))
+        # angle, translations, scale, shear = torchvision.transforms.RandomAffine.get_params(degrees=(-3,3),scale_ranges=(1,1),shears=(-3,3,-3,3),translate=(0,0),img_size=(208,208))
+        x_train_transformed[:,0,:,:,:] = torchvision.transforms.functional.affine(x_train_transformed[:,0,:,:,:], angle, translations, scale, shear)
+        x_train_transformed[:,1,:,:,:] = torchvision.transforms.functional.affine(x_train_transformed[:,1,:,:,:], angle, translations, scale, shear)
+        x_train_transformed = x_train_transformed.permute(0, 1, 3, 2, 4)
+        #x_train_transformed = torchvision.transforms.functional.affine(x_train_transformed, angle, translations, scale, shear).permute(0, 1, 3, 2, 4)
+        y_train_transformed = torchvision.transforms.functional.affine(y_train_transformed, angle, translations, scale, shear)
+        
+        if (counter == 0):
+            plt.imsave('transforms/x_after.png',x_train_transformed[0,0,:,2,:].cpu().numpy())
+            plt.imsave('transforms/y_after.png',y_train_transformed[0].cpu().numpy())
+            counter = 1
+
+        y_pred = model(x_train_transformed)
+        loss = loss_fn(y_pred,y_train_transformed.to(dtype=torch.long))
         epoch_loss += loss.item()
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
-    print('\tLoss ' + "{:.2f}".format(epoch_loss), end='')
+    print('\tLoss ' + "{:.4f}".format(epoch_loss), end='')
     print('\tTime ' + "{:.2f}".format(time.perf_counter()-start_time), end='')
 
     # save model and print dice score every 10 epoch
-    if (epoch % 10 == 0):
+    if (epoch % 5 == 0):
         torch.save(model.state_dict(), dir_checkpoint + f'CP_epoch{epoch + 1}.pth')
         dice = 0
         model.eval()
@@ -246,7 +294,7 @@ for epoch in range(201):
                 dice += 1
             else:
                 dice += sum(sum( (y_eval==1) & (y_pred>0.5) ))*2/( sum(sum(y_eval)) +sum(sum(y_pred>0.5)) )
-        print('\tDice ' + "{:.2f}".format(dice.item()/len(eval_list)), end='')
+        print('\tDice ' + "{:.4f}".format(dice.item()/len(eval_list)), end='')
         model.train()
 
     # update optimizer learning rate every 20 epoch
