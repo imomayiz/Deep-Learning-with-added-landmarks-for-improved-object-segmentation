@@ -87,7 +87,7 @@ class UNet(nn.Module):
 
         self.out = nn.Conv2d(
             in_channels = 64,
-            out_channels=3,
+            out_channels=5,
             kernel_size=1
         )
 
@@ -114,7 +114,7 @@ class UNet(nn.Module):
         x = self.up_trans_4(x)
         x = self.up_conv_4(torch.cat([x, x1], 1))
         x = self.out(x)
-        x = self.soft(x)
+        #x = self.soft(x)
         return x
 
 # define the model
@@ -125,7 +125,9 @@ if(not os.path.exists(dir_checkpoint)):
     os.mkdir(dir_checkpoint)
 
 # choose what loss function to use
-loss_fn = torch.nn.NLLLoss(weight=torch.tensor([1., 1., 1.], device='cuda'))
+#loss_fn = torch.nn.NLLLoss(weight=torch.tensor([1., 1., 1.], device='cuda'))
+loss_fn = torch.nn.BCEWithLogitsLoss()
+
 
 def chunks(lst, n):
     """Yield successive n-sized chunks from lst."""
@@ -157,30 +159,53 @@ def load_vtk(file_number):
     data_kid = vtk_to_numpy(reader.GetOutput().GetPointData().GetScalars())
     data_kid = data_kid.reshape(x_range,y_range,z_range)
 
-    data = np.zeros(3*x_range*y_range*z_range).reshape(3,x_range,y_range,z_range)
+    reader.SetFileName("../../Project course/binary_spleen500%s.vtk" %(file_number))
+    reader.Update()
+    data_spl = vtk_to_numpy(reader.GetOutput().GetPointData().GetScalars())
+    data_spl = data_spl.reshape(x_range,y_range,z_range)
+
+    reader.SetFileName("../../Project course/binary_panc500%s.vtk" %(file_number))
+    reader.Update()
+    data_pan = vtk_to_numpy(reader.GetOutput().GetPointData().GetScalars())
+    data_pan = data_pan.reshape(x_range,y_range,z_range)
+
+    reader.SetFileName("../../Project course/binary_bladder500%s.vtk" %(file_number))
+    reader.Update()
+    data_bla = vtk_to_numpy(reader.GetOutput().GetPointData().GetScalars())
+    data_bla = data_bla.reshape(x_range,y_range,z_range)
+
+    data = np.zeros(7*x_range*y_range*z_range).reshape(7,x_range,y_range,z_range)
     data[0] = data_fat
     data[1] = data_wat
-    data[2] = data_liv + 2*data_kid
-    
+    data[2] = data_liv 
+    data[3] = data_kid
+    data[4] = data_spl
+    data[5] = data_pan
+    data[6] = data_bla
+    #print(sum(sum(sum(data[6]))))
     # print(data_liv.shape)
     # print(data_kid.shape)
-    print("----------")
-    print(sum(sum(sum((data_liv == 1) & (data_kid == 1)))))
-    print(sum(sum(sum(data_kid == 1))))
-    print(sum(sum(sum(data_liv == 1))))
+    # print("----------")
+    # print(sum(sum(sum((data_liv == 1) & (data_kid == 1)))))
+    # print(sum(sum(sum(data_kid == 1))))
+    # print(sum(sum(sum(data_liv == 1))))
 
     grid = torch.from_numpy(data)
     return grid.to(dtype=torch.float32)
 
 # body_array contains all .vtk-files
 body_array = []
+range_array = []
 for i in range(500):
     if(os.path.exists("../../Project course/500%s_fat_content.vtk" %(str(i).zfill(3)))):
         body_array.append(load_vtk(i))
+        f = open("../../Project course/landmarks/LMs_500%s.txt" %(str(i).zfill(3)), 'r')
+        landmarks = [[x for x in line.split()] for line in f]
+        range_array.append([int(float(landmarks[8][1])),int(float(landmarks[6][1])+20)])
 
-for i in range(50):
-    print(body_array[i][2,:,:,:].max())
-
+#for i in range(50):
+#    print(body_array[i][2,:,:,:].max())
+#print(body_array[0][6].sum())
 # miss classification in the .vtk file
 body_array[1][2,157,240,109] = 0
 
@@ -188,16 +213,31 @@ body_array[1][2,157,240,109] = 0
 # only slices in y-direction that have liver + 2 slices of margin
 body_array_new = []
 for i in range(len(body_array)):
-    my_list = torch.sum(torch.sum(body_array[i][2,:,:,:],dim=0),dim=1)>0
+    my_list = torch.sum(body_array[i][2:7,:,:,:],dim=(0,1,3))>0
+    #print(my_list)
     indices = [j for j, x in enumerate(my_list) if x == True]
-    body_array_new.append(body_array[i][:,:,min(indices)-2:max(indices)+3,:])
+    #print('---')
+    #print(min(indices))
+    #print(max(indices))
+    # body_array_new.append(body_array[i][:,:,min(indices)-2:max(indices)+3,:])
+    body_array_new.append(body_array[i][:,:,range_array[i][0]-2:range_array[i][1]+3,:])
+    # body_array_new.append(body_array[i][:,:,100-2:140+3,:])
+
+training_bodies = body_array_new[:40]
+testing_bodies = body_array_new[40:]
 
 # smart_list contains index pairs of bodies and slices
 smart_list = []
-for i in range(len(body_array_new)):
-    for j in range(body_array_new[i].size()[2]-4):
+for i in range(len(training_bodies)):
+    for j in range(training_bodies[i].size()[2]-4):
         smart_list.append([i,j])
 random.shuffle(smart_list)
+
+
+smart_list_eval = []
+for i in range(len(testing_bodies)):
+    for j in range(testing_bodies[i].size()[2]-4):
+        smart_list_eval.append([i,j])
 
 # size of scans
 x_range,y_range,z_range = 256,252,256
@@ -206,13 +246,15 @@ x_range,y_range,z_range = 256,252,256
 # training and evaluation
 batch_size=4
 x_train = torch.zeros(batch_size,2,x_range,5,z_range).to(device='cuda')
-y_train = torch.zeros(batch_size,x_range,z_range).to(device='cuda')
+y_train = torch.zeros(batch_size,5,x_range,z_range).to(device='cuda')
 train_share = 0.9
 # train_list = smart_list[:int(len(smart_list)*train_share)]
+train_list = smart_list
 # eval_list = smart_list[int(len(smart_list)*train_share):]
+eval_list = smart_list_eval
 
-train_list = literal_eval(open("train_list.txt").read())
-eval_list = literal_eval(open("eval_list.txt").read())
+# train_list = literal_eval(open("train_list.txt").read())
+# eval_list = literal_eval(open("eval_list.txt").read())
 
 # print(eval_list)
 
@@ -225,19 +267,21 @@ eval_list = literal_eval(open("eval_list.txt").read())
 # f.write(str(train_list))
 # f.close()
 
-data_tf = torchvision.transforms.RandomCrop(128)
-
 # define optimizer
 learn_rate = 0.0001
 optimizer = torch.optim.Adam(model.parameters(),lr=learn_rate)
 
-#start timer
-start_time = time.perf_counter()
+# define time
+total_time = 0
 
 counter = 0
-
+output = nn.ReLU()
 # train model
+print("\n\t\t\t\t\t\t\tLiver\tKidn\tSpleen\tPanc\tBlad")
 for epoch in range(201):
+
+    #start timer
+    start_time = time.perf_counter()
 
     print('\nEpoch\t' + str(epoch), end='')
     epoch_loss = 0
@@ -246,17 +290,18 @@ for epoch in range(201):
     batch_list = list(chunks(train_list,batch_size))
 
     for batch in batch_list:
+        # print(batch)
         for i in range(len(batch)):
             x_train[i] = body_array_new[batch[i][0]][0:2,:,batch[i][1]:batch[i][1]+5,:]
-            y_train[i] = body_array_new[batch[i][0]][2,:,batch[i][1]+2,:]
-        
-        i, j, h, w = transforms.RandomCrop.get_params(y_train, output_size=(256, 256))
+            y_train[i] = body_array_new[batch[i][0]][2:7,:,batch[i][1]+2,:]
+        # print(y_train[:,4,:,:].sum())
+        i, j, h, w = transforms.RandomCrop.get_params(y_train, output_size=(128, 128))
         x_train_transformed = torchvision.transforms.functional.crop(x_train.permute(0, 1, 3, 2, 4),i,j,h,w)
         y_train_transformed = torchvision.transforms.functional.crop(y_train,i,j,h,w)
         
-        if (counter == 0):
-            plt.imsave('transforms/x_before.png',x_train_transformed[0,0,2,:,:].cpu().numpy())
-            plt.imsave('transforms/y_before.png',y_train_transformed[0].cpu().numpy())
+        if (counter < 10):
+            plt.imsave('transforms/x_before%s.png'%(str(counter)),x_train_transformed[0,0,2,:,:].cpu().numpy())
+            plt.imsave('transforms/y_before%s.png'%(str(counter)),y_train_transformed[0,4,:,:].cpu().numpy())
         
         angle, translations, scale, shear = torchvision.transforms.RandomAffine.get_params(degrees=(0,0),scale_ranges=(1,1),shears=(0,0),translate=(0,0),img_size=(256,256))
         # angle, translations, scale, shear = torchvision.transforms.RandomAffine.get_params(degrees=(-3,3),scale_ranges=(1,1),shears=(-3,3,-3,3),translate=(0,0),img_size=(208,208))
@@ -266,35 +311,46 @@ for epoch in range(201):
         #x_train_transformed = torchvision.transforms.functional.affine(x_train_transformed, angle, translations, scale, shear).permute(0, 1, 3, 2, 4)
         y_train_transformed = torchvision.transforms.functional.affine(y_train_transformed, angle, translations, scale, shear)
         
-        if (counter == 0):
-            plt.imsave('transforms/x_after.png',x_train_transformed[0,0,:,2,:].cpu().numpy())
-            plt.imsave('transforms/y_after.png',y_train_transformed[0].cpu().numpy())
-            counter = 1
+        if (counter < 10):
+            plt.imsave('transforms/x_after%s.png'%(str(counter)),x_train_transformed[0,0,:,2,:].cpu().numpy())
+            plt.imsave('transforms/y_after%s.png'%(str(counter)),y_train_transformed[0,4,:,:].cpu().numpy())
+            counter += 1
 
         y_pred = model(x_train_transformed)
-        loss = loss_fn(y_pred,y_train_transformed.to(dtype=torch.long))
+        loss = loss_fn(y_pred,y_train_transformed)
         epoch_loss += loss.item()
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
+    # update time (not including dice score)
+    total_time += time.perf_counter()-start_time
+
     print('\tLoss ' + "{:.4f}".format(epoch_loss), end='')
-    print('\tTime ' + "{:.2f}".format(time.perf_counter()-start_time), end='')
+    print('\tTime ' + "{:.2f}".format(total_time), end='')
 
     # save model and print dice score every 10 epoch
-    if (epoch % 5 == 0):
+    if (epoch % 1 == 0):
         torch.save(model.state_dict(), dir_checkpoint + f'CP_epoch{epoch + 1}.pth')
-        dice = 0
+        dice_num = torch.zeros(5, device='cuda')
+        dice_den = torch.zeros(5, device='cuda')
         model.eval()
         for sample in eval_list:
-            x_eval = body_array_new[sample[0]][0:2,:,sample[1]:sample[1]+5,:].unsqueeze(0).to(device='cuda')
-            y_eval = body_array_new[sample[0]][2,:,sample[1]+2,:].to(device='cuda')
-            y_pred = model(x_eval).squeeze(0)[1].exp()
-            if( sum(sum(y_eval))+sum(sum(y_pred>0.5)) == 0 ):
-                dice += 1
-            else:
-                dice += sum(sum( (y_eval==1) & (y_pred>0.5) ))*2/( sum(sum(y_eval)) +sum(sum(y_pred>0.5)) )
-        print('\tDice ' + "{:.4f}".format(dice.item()/len(eval_list)), end='')
+            x_eval = testing_bodies[sample[0]][0:2,:,sample[1]:sample[1]+5,:].unsqueeze(0).to(device='cuda')
+            y_eval = testing_bodies[sample[0]][2:7,:,sample[1]+2,:].to(device='cuda')
+            y_pred = output(model(x_eval).squeeze(0))
+
+            dice_num += ( (y_eval==1) & (y_pred>0.5) ).sum(dim=(1, 2))*2
+            dice_den +=  y_eval.sum(dim=(1, 2)) +(y_pred>0.5).sum(dim=(1, 2))
+            #print((y_eval.sum(dim=(1, 2)) +(y_pred>0.5).sum(dim=(1, 2)) ))
+        print('\tDice ',end='')
+        for i in range(5):
+            if (dice_den[i] == 0): 
+                print('\t' + "Undef", end='')
+            else: 
+                print('\t' + "{:.4f}".format(dice_num[i].item()/dice_den[i].item()), end='')
+
+
         model.train()
 
     # update optimizer learning rate every 20 epoch
@@ -305,13 +361,4 @@ for epoch in range(201):
             print('\tLR 1/' + "{:.0f}".format(1/learn_rate), end='')
         else:
             print('\tLR 1/' + "{:.0f}".format(1/learn_rate), end='')
-
-
-
-
-
-
-
-
-
 
