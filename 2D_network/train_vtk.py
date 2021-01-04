@@ -37,7 +37,7 @@ def chunks(lst, n):
         yield lst[i:i + n]
 
 
-def load_vtk(file_number,vtk_dir="vtk_files"):
+def load_vtk(file_number,vtk_dir="vtk_files",organ="liver"):
     """Loads .vtk file into tensor given file number"""
     file_number = str(file_number).zfill(3)
     reader = vtk.vtkGenericDataObjectReader()
@@ -52,7 +52,7 @@ def load_vtk(file_number,vtk_dir="vtk_files"):
     data_wat = vtk_to_numpy(reader.GetOutput().GetPointData().GetScalars())
     data_wat = data_wat.reshape(x_range,y_range,z_range)
 
-    reader.SetFileName(vtk_dir+"/binary_liver500%s.vtk" %(file_number))
+    reader.SetFileName(vtk_dir+"/binary_"+organ+"500%s.vtk" %(file_number))
     reader.Update()
     data_liv = vtk_to_numpy(reader.GetOutput().GetPointData().GetScalars())
     data_liv = data_liv.reshape(x_range,y_range,z_range)
@@ -65,13 +65,13 @@ def load_vtk(file_number,vtk_dir="vtk_files"):
     grid = torch.from_numpy(data)
     return grid.to(dtype=torch.float32)
 
-def load_data(vtk_dir="vtk_files"):
+def load_data(vtk_dir="vtk_files",add_landmarks=False,organ='liver'):
     print('_______________Loading the data_______________')
     # body_array contains all .vtk-files
     body_array = []
     for i in range(500):
         if(os.path.exists(vtk_dir+"/500%s_fat_content.vtk" %(str(i).zfill(3)))):
-            body_array.append(load_vtk(i,vtk_dir))
+            body_array.append(load_vtk(i,vtk_dir,organ))
     #correct the groundtruth for body n#2
     body_array[1][2,157,240,109] = 0        
     ## body_array_new contains only slices with liver 
@@ -79,13 +79,42 @@ def load_data(vtk_dir="vtk_files"):
     for i in range(len(body_array)):
         my_list = torch.sum(torch.sum(body_array[i][2,:,:,:],dim=0),dim=1)>0
         indices = [j for j, x in enumerate(my_list) if x == True]
-        body_array_new.append(body_array[i][:,:,min(indices):max(indices),:])
+        if len(indices)!=0:
+            body_array_new.append(body_array[i][:,:,min(indices):max(indices),:])
     train_bodies = body_array_new[:40]
     test_bodies = body_array_new[40:]
-    return(train_bodies, test_bodies)
+    maps_list = [None]*50
+    if add_landmarks:
+        for k in range(1,51):
+            file = open(r"theirLandmarks/LMs_"+ str(k) + ".txt")
+            lines = file.readlines()
+            file.close()
+            X1,_,Z1 = map(int,map(float,lines[6].split()))
+            X2,_,Z2 = map(int,map(float,lines[7].split()))
+            
+            distance_map = np.zeros((256,256))
+            distance_map1 = np.zeros((256,256))
+            distance_map2 = np.zeros((256,256))
+
+            for i in range(256):
+                 for j in range(256):
+                     distance_map1[i,j] = abs(i-X1) + abs(j-Z1)
+                     distance_map2[i,j] = abs(i-X2) +abs(j-Z2)
+            distance_map1 = distance_map1 + 1
+            distance_map1 = 1/distance_map1
+
+            distance_map2 = distance_map2 + 1
+            distance_map2 = 1/distance_map2
+
+            distance_map = distance_map1 + distance_map2
+            distance_map = distance_map/distance_map[X1,Z1] #normalization
+            maps_list[k-1] = distance_map
+            maps_list = np.asarray(maps_list)
+        return(train_bodies, test_bodies, maps_list)
+    return(train_bodies, test_bodies, None)
 
 
-def train_net(net,body_array_new,epochs,device,lr,batch_size=10):
+def train_net(net,body_array_new,maps_list,epochs,device,lr,batch_size=10):
 
     optimizer = optim.RMSprop(net.parameters(), lr=lr, weight_decay=1e-8, momentum=0.9)
     loss_fn = nn.BCEWithLogitsLoss()
@@ -93,14 +122,15 @@ def train_net(net,body_array_new,epochs,device,lr,batch_size=10):
     #save [body_idx,slice_idx]
     smart_list = []
     for i in range(len(body_array_new)):
-        for j in range(body_array_new[i].size()[2]-4):
+        for j in range(body_array_new[i].size()[2]):
             smart_list.append([i,j])
 
 
     x_range,y_range,z_range = 256,252,256
     
     
-    train_list = smart_list[:int(len(smart_list)*0.85)]
+    #train_list = smart_list[:int(len(smart_list)*0.85)]
+    train_list = smart_list
     val_list = smart_list[int(len(smart_list)*0.85):]
     random.shuffle(train_list)
     batch_list = list(chunks(train_list,batch_size))
@@ -156,25 +186,23 @@ def train_net(net,body_array_new,epochs,device,lr,batch_size=10):
   
   
         
-def eval_net(model,body_array_new,device):
+def eval_net(model,body_array_new, maps_list, device):
     model.eval()
     
     #save [body_idx,slice_idx]
     smart_list = []
     for i in range(len(body_array_new)):
-        for j in range(body_array_new[i].size()[2]-4):
+        for j in range(body_array_new[i].size()[2]):
             smart_list.append([i,j])
             
-     
     x_range,y_range,z_range = 256,252,256
-    
     x_eval = torch.zeros(1,2,x_range,z_range).to(device='cuda')
-    #print(len(smart_list))
+
     #store sum of intersections/unions for all slices per body
     inter_array = np.zeros(len(body_array_new))
     union_array = np.zeros(len(body_array_new))
+    dice_n = 0
     for body,slc in smart_list:
-        #print(body,slc)
         x_eval[0,0:2,:,:] = body_array_new[body][0:2,:,slc,:]
         #x_eval[0,2,:,:] = torch.from_numpy(np.asarray(maps_list[body]))
         y_eval = body_array_new[body][2:,:,slc,:].to(device='cuda')
@@ -186,53 +214,45 @@ def eval_net(model,body_array_new,device):
         union = torch.sum(y_pred) + torch.sum(y_eval)
         inter_array[body] += inter.float()
         union_array[body] += union.float()
-    #print(inter_array)
-    #print(union_array)
-    #compute dice for each body          
+        
+        #compute normal dice
+        if union==0:
+            dice_n += 1
+        else:
+            dice_n += 2*inter.float()/union.float()
+        
+    #compute micro-average dice for each body          
     dice_array = np.zeros(len(body_array_new))
     for i in range(len(body_array_new)):
         if union_array[i]==0:
             dice_array[i] = 1    
         else:
             dice_array[i] = 2*inter_array[i]/union_array[i]
-    print(dice_array)            
+    print("Micro-average dice scores for each_body: ")
+    print(*[(i+1,round(dice,4)) for i,dice in enumerate(dice_array)],sep=" ")
+    print(f"Average dice score over {len(dice_array)} bodies: {round(sum(dice_array)/len(dice_array),4)}")         
+    print(f'Average dice over {len(smart_list)} samples: {round(dice_n.item()/len(smart_list),4)}')
     
-    #dice = 0
-    #inter_body = torch.FloatTensor(1).cuda().zero_()
-    #union_body = torch.FloatTensor(1).cuda().zero_()
-    #for i in range(masks.shape[0]):
-        #for each slice compute inter and union
-        #final dice score of the whole body is 2*sum(inter)/sum(union)
-        #mask_pred = mask_preds[i,:,:,:]
-        #mask = masks[i,:,:,:]
-        #pred = torch.sigmoid(mask_pred)
-        #pred = (pred > 0.5).float()
-        
-        #inter = torch.dot(mask.cuda().view(-1),pred.view(-1))
-        #union = torch.sum(pred) + torch.sum(mask.cuda())
-        #inter_body += inter
-        #union_body += union   
-    #if union_body!=0:
-     #   dice += 2*inter_body.item()/union_body.item() 
-    #else:
-     #   dice+=1    
-    #pbar.update()
-    #print(f'dice: {dice/n_val}')
 
 
 def get_args():
     parser = argparse.ArgumentParser(description='Train the UNet on images and target masks')
     parser.add_argument('--epochs', type=int, default=20,
                         help='Number of epochs')
-    parser.add_argument('--batchsize', type=int, nargs='?', default=20,
+    parser.add_argument('--batchsize', type=int, nargs='?', default=10,
                         help='Batch size')
     parser.add_argument('--lr', type=float, nargs='?', default=0.00001,
                         help='Learning rate')
+    parser.add_argument('--organ', type=str, default='liver',
+                        help='Name of the organ to be segmented')
     parser.add_argument('--load', type=str, default='CP_epoch20.pth',
                         help='Load model')
     parser.add_argument('--test', type=str, default=None,
                         help='Load test dataset')
-    parser.add_argument('--train',type=str, default='true', help='Train the model')
+    parser.add_argument('--no-train',dest='train', action='store_false', help='Skip the training phase')
+    parser.set_defaults(train=True)
+    parser.add_argument('--landmarks', dest='landmarks', action='store_true')
+    parser.set_defaults(feature=False)
     return parser.parse_args()
 
 
@@ -245,15 +265,15 @@ if __name__=='__main__':
     model.to(device=device)
     
 
-    train_data, test_data = load_data()        
+    train_data, test_data, maps = load_data(organ=args.organ,add_landmarks=args.landmarks)        
 
-    if args.train=='true':
-        train_net(net=model, body_array_new=train_data, epochs=args.epochs, lr=args.lr, device=device, batch_size=args.batchsize)
+    if args.train:
+        train_net(net=model, body_array_new=train_data, maps_list=maps, epochs=args.epochs, lr=args.lr, device=device, batch_size=args.batchsize)
     
         
     model_eval = Unet(n_channels=2, n_classes=1)
     model_eval.load_state_dict(torch.load(dir_checkpoint+args.load))
     model_eval.to(device=device)
-    eval_net(model=model_eval,body_array_new=test_data,device=device)
+    eval_net(model=model_eval,body_array_new=test_data, maps_list=maps, device=device)
     
    
