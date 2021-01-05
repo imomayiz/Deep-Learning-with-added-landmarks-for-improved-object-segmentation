@@ -47,21 +47,21 @@ def load_vtk(file_number,vtk_dir="vtk_files",organs=list_organs):
     
     data_fat = vtk_to_numpy(reader.GetOutput().GetPointData().GetScalars())
     x_range, y_range, z_range = reader.GetOutput().GetDimensions()
-    data = np.zeros(7*x_range*y_range*z_range).reshape(7,x_range,y_range,z_range)
+    data = np.zeros(6*x_range*y_range*z_range).reshape(6,x_range,y_range,z_range)
     data[0] = data_fat.reshape(x_range,y_range,z_range)
 
-    reader.SetFileName(vtk_dir+"/500%s_wat_content.vtk" %(file_number))
-    reader.Update()
-    data_wat = vtk_to_numpy(reader.GetOutput().GetPointData().GetScalars())
-    data[1] = data_wat.reshape(x_range,y_range,z_range)
+    #reader.SetFileName(vtk_dir+"/500%s_wat_content.vtk" %(file_number))
+    #reader.Update()
+    #data_wat = vtk_to_numpy(reader.GetOutput().GetPointData().GetScalars())
+    #data[1] = data_wat.reshape(x_range,y_range,z_range)
     
     for i,organ in enumerate(organs):
         reader.SetFileName(vtk_dir+"/binary_"+organ+"500%s.vtk" %(file_number))
         reader.Update()
         data_organ = vtk_to_numpy(reader.GetOutput().GetPointData().GetScalars())
-        data[i+2] = data_organ.reshape(x_range,y_range,z_range)
+        data[i+1] = data_organ.reshape(x_range,y_range,z_range)
     
-    grid = torch.from_numpy(data)
+    grid = torch.from_numpy(data[:,54:214,:,54:214])
     return grid.to(dtype=torch.float32)
 
 def load_data(vtk_dir="vtk_files",add_landmarks=False,organs=list_organs):
@@ -73,18 +73,18 @@ def load_data(vtk_dir="vtk_files",add_landmarks=False,organs=list_organs):
             body_array.append(load_vtk(i,vtk_dir,organs))
             
     #correct the liver groundtruth for body n#2
-    body_array[1][2,157,240,109] = 0        
+    body_array[1][1,157,240,109] = 0        
     
     ## body_array_new contains only slices with liver 
     body_array_new = []
     for i in range(len(body_array)):
-        my_list = torch.sum(body_array[i][2:7,:,:,:],dim=(0,1,3))>0
+        my_list = torch.sum(body_array[i][1:6,:,:,:],dim=(0,1,3))>0
         indices = [j for j, x in enumerate(my_list) if x == True]
         if len(indices)!=0:
             body_array_new.append(body_array[i][:,:,min(indices):max(indices),:])
         else:
             body_array_new.append(body_array[i][:,:,0:5,:])
-            
+        #print(body_array_new[i].shape)        
     train_bodies = body_array_new[:40]
     test_bodies = body_array_new[40:]
     
@@ -132,7 +132,7 @@ def train_net(model,body_array_new,maps_list,epochs,device,lr,batch_size=10, org
             smart_list.append([i,j])
 
 
-    x_range,y_range,z_range = 256,252,256
+    x_range,y_range,z_range = 160,252,160
     
     
     train_list = smart_list[:int(len(smart_list)*0.85)]
@@ -151,9 +151,9 @@ def train_net(model,body_array_new,maps_list,epochs,device,lr,batch_size=10, org
                 y_train = {o:torch.zeros(len(batch),1,x_range,z_range).to(device='cuda') for o in organs}
                 for i in range(len(batch)):
                     x_train[i,0:1,:,:] = body_array_new[batch[i][0]][0:1,:,batch[i][1],:]
-                    #x_train[i,2,:,:] = torch.from_numpy(np.asarray(maps_list[batch[i][0]]))
+                    #x_train[i,1,:,:] = torch.from_numpy(np.asarray(maps_list[batch[i][0]]))
                     for j,o in enumerate(organs):
-                        y_train[o][i] = body_array_new[batch[i][0]][j+2:j+3,:,batch[i][1],:]
+                        y_train[o][i] = body_array_new[batch[i][0]][j+1:j+2,:,batch[i][1],:]
                     n_train+=1
                     
                 loss_items = dict()
@@ -184,11 +184,12 @@ def train_net(model,body_array_new,maps_list,epochs,device,lr,batch_size=10, org
         x_eval = torch.zeros(1,1,x_range,z_range).to(device='cuda')
         for sample in val_list:
             x_eval[0,0:1,:,:] = body_array_new[sample[0]][0:1,:,sample[1],:]
-            #x_eval[0,2,:,:] = torch.from_numpy(np.asarray(maps_list[sample[0]]))
+            #x_eval[0,1,:,:] = torch.from_numpy(np.asarray(maps_list[sample[0]]))
+            preds = model(x_eval)
             for j,o in enumerate(organs):
-                y_eval = body_array_new[sample[0]][j+2:j+3,:,sample[1],:].to(device='cuda')
+                y_eval = body_array_new[sample[0]][j+1:j+2,:,sample[1],:].to(device='cuda')
                 with torch.no_grad():
-                    y_pred = model(x_eval)[j]
+                    y_pred = preds[j]
                    
                 y_pred = torch.sigmoid(y_pred)
                 y_pred = (y_pred>0.5).float()
@@ -199,7 +200,7 @@ def train_net(model,body_array_new,maps_list,epochs,device,lr,batch_size=10, org
                 else:
                     dice_dict[o] += 2*inter/union
                 #dice_dict[o] = dice.item()
-        print(' '.join([(o,dice_dict[o].item()/len(val_list)) for o in organs]))
+        print(*[(o,dice_dict[o].item()/len(val_list)) for o in organs])
   
   
 def eval_net(model,body_array_new, maps_list, device, organs=list_organs):
@@ -211,7 +212,7 @@ def eval_net(model,body_array_new, maps_list, device, organs=list_organs):
         for j in range(body_array_new[i].size()[2]):
             smart_list.append([i,j])
             
-    x_range,y_range,z_range = 256,252,256
+    x_range,y_range,z_range = 160,252,160
     x_eval = torch.zeros(1,1,x_range,z_range).to(device='cuda')
     dice_dict = dict()
     
@@ -222,8 +223,8 @@ def eval_net(model,body_array_new, maps_list, device, organs=list_organs):
         dice_n = 0
         for body,slc in smart_list:
             x_eval[0,0:1,:,:] = body_array_new[body][0:1,:,slc,:]
-            #x_eval[0,2,:,:] = torch.from_numpy(np.asarray(maps_list[body]))
-            y_eval = body_array_new[body][i+2:i+3,:,slc,:].to(device='cuda')
+            #x_eval[0,1,:,:] = torch.from_numpy(np.asarray(maps_list[body]))
+            y_eval = body_array_new[body][i+1:i+2,:,slc,:].to(device='cuda')
             with torch.no_grad():
                 y_pred = model(x_eval)[i]
             y_pred = torch.sigmoid(y_pred)
@@ -241,16 +242,17 @@ def eval_net(model,body_array_new, maps_list, device, organs=list_organs):
             
         #compute micro-average dice for each body          
         dice_array = np.zeros(len(body_array_new))
-        for i in range(len(body_array_new)):
-            if union_array[i]==0:
-                dice_array[i] = 1    
+        for bo in range(len(body_array_new)):
+            if union_array[bo]==0:
+                dice_array[bo] = 1    
             else:
-                dice_array[i] = 2*inter_array[i]/union_array[i]
+                dice_array[bo] = 2*inter_array[bo]/union_array[bo]
                 
         dice_dict[o] = round(sum(dice_array)/len(dice_array),4)        
                 
-    print("Micro-average dice scores for each_body: ")
-    print(*[str(o)+' '+dice for o,dice in dice_dict.values()],sep='\n')
+    print("Average dice score: ")
+    #print(dice_dict)
+    print(*[str(o)+' '+str(dice) for o,dice in dice_dict.items()],sep='\n')
     #print(*[(i+1,round(dice,4)) for i,dice in enumerate(dice_array)],sep=" ")
     #print(f"Average dice score over {len(dice_array)} bodies: {round(sum(dice_array)/len(dice_array),4)}")         
     #print(f'Average dice over {len(smart_list)} samples: {round(dice_n.item()/len(smart_list),4)}')
