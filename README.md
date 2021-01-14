@@ -36,7 +36,6 @@ To train and evaluate the 2D model with early fusion of the landmarks:
 To train and evaluate the 2D model with late fusion of the landmarks:
 `python train_vtk_lf.py --batchsize --lr --epochs --organ --load`
 
-### 3D network
 
 ### Theory
 - The U-Net (2D model) architecture
