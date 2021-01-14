@@ -83,11 +83,37 @@ def load_data(vtk_dir="vtk_files",organ='liver'):
             body_array_new.append(body_array[i][:,:,min(indices):max(indices),:])
     train_bodies = body_array_new[:40]
     test_bodies = body_array_new[40:]
- 
-    return(train_bodies, test_bodies)
+    #compute distance maps
+    maps_list = [None]*50
+    for k in range(1,51):
+        file = open(r"theirLandmarks/LMs_"+ str(k) + ".txt")
+        lines = file.readlines()
+        file.close()
+        X1,_,Z1 = map(int,map(float,lines[6].split()))
+        X2,_,Z2 = map(int,map(float,lines[7].split()))
+        
+        distance_map = np.zeros((256,256))
+        distance_map1 = np.zeros((256,256))
+        distance_map2 = np.zeros((256,256))
+
+        for i in range(256):
+             for j in range(256):
+                 distance_map1[i,j] = abs(i-X1) + abs(j-Z1)
+                 distance_map2[i,j] = abs(i-X2) +abs(j-Z2)
+        distance_map1 = distance_map1 + 1
+        distance_map1 = 1/distance_map1
+
+        distance_map2 = distance_map2 + 1
+        distance_map2 = 1/distance_map2
+
+        distance_map = distance_map1 + distance_map2
+        distance_map = distance_map/distance_map[X1,Z1] #normalization
+        maps_list[k-1] = distance_map
+        maps_list = np.asarray(maps_list)
+    return(train_bodies, test_bodies, maps_list)
 
 
-def train_net(net,body_array_new,epochs,device,lr,batch_size=10):
+def train_net(net,body_array_new,maps_list,epochs,device,lr,batch_size=10):
 
     optimizer = optim.RMSprop(net.parameters(), lr=lr, weight_decay=1e-8, momentum=0.9)
     loss_fn = nn.BCEWithLogitsLoss()
@@ -115,10 +141,11 @@ def train_net(net,body_array_new,epochs,device,lr,batch_size=10):
         n_train = 0
         with tqdm(total=len(batch_list), desc=f'Epoch {epoch + 1}/{epochs}', unit='img') as pbar:
             for batch in batch_list:
-                x_train = torch.zeros(len(batch),2,x_range,z_range).to(device='cuda')
+                x_train = torch.zeros(len(batch),3,x_range,z_range).to(device='cuda')
                 y_train = torch.zeros(len(batch),1,x_range,z_range).to(device='cuda')
                 for i in range(len(batch)):
                     x_train[i,0:2,:,:] = body_array_new[batch[i][0]][0:2,:,batch[i][1],:]
+                    x_train[i,2,:,:] = torch.from_numpy(np.asarray(maps_list[batch[i][0]]))
                     y_train[i] = body_array_new[batch[i][0]][2:,:,batch[i][1],:]
                     n_train+=1
                 y_pred = model(x_train)
@@ -138,9 +165,10 @@ def train_net(net,body_array_new,epochs,device,lr,batch_size=10):
         print("_____________Evaluating on validation set__________________")
         model.eval()
         dice=0
-        x_eval = torch.zeros(1,2,x_range,z_range).to(device='cuda')
+        x_eval = torch.zeros(1,3,x_range,z_range).to(device='cuda')
         for sample in val_list:
             x_eval[0,0:2,:,:] = body_array_new[sample[0]][0:2,:,sample[1],:]
+            x_eval[0,2,:,:] = torch.from_numpy(np.asarray(maps_list[sample[0]]))
             y_eval = body_array_new[sample[0]][2:,:,sample[1],:].to(device='cuda')
             with torch.no_grad():
                 y_pred = model(x_eval)
@@ -157,7 +185,7 @@ def train_net(net,body_array_new,epochs,device,lr,batch_size=10):
   
   
         
-def eval_net(model,body_array_new, device):
+def eval_net(model,body_array_new, maps_list, device):
     model.eval()
     
     #save [body_idx,slice_idx]
@@ -167,7 +195,7 @@ def eval_net(model,body_array_new, device):
             smart_list.append([i,j])
             
     x_range,y_range,z_range = 256,252,256
-    x_eval = torch.zeros(1,2,x_range,z_range).to(device='cuda')
+    x_eval = torch.zeros(1,3,x_range,z_range).to(device='cuda')
 
     #store sum of intersections/unions for all slices per body
     inter_array = np.zeros(len(body_array_new))
@@ -175,6 +203,7 @@ def eval_net(model,body_array_new, device):
     dice_n = 0
     for body,slc in smart_list:
         x_eval[0,0:2,:,:] = body_array_new[body][0:2,:,slc,:]
+        x_eval[0,2,:,:] = torch.from_numpy(np.asarray(maps_list[body]))
         y_eval = body_array_new[body][2:,:,slc,:].to(device='cuda')
         with torch.no_grad():
             y_pred = model(x_eval)
@@ -221,8 +250,6 @@ def get_args():
                         help='Load test dataset')
     parser.add_argument('--no-train',dest='train', action='store_false', help='Skip the training phase')
     parser.set_defaults(train=True)
-    parser.add_argument('--landmarks', dest='landmarks', action='store_true')
-    parser.set_defaults(feature=False)
     return parser.parse_args()
 
 
@@ -231,19 +258,19 @@ if __name__=='__main__':
     args = get_args()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
    
-    model = Unet(n_channels=2, n_classes=1)
+    model = Unet(n_channels=3, n_classes=1)
     model.to(device=device)
     
 
-    train_data, test_data = load_data(organ=args.organ)        
+    train_data, test_data, maps = load_data(organ=args.organ)        
 
     if args.train:
-        train_net(net=model, body_array_new=train_data, epochs=args.epochs, lr=args.lr, device=device, batch_size=args.batchsize)
+        train_net(net=model, body_array_new=train_data, maps_list=maps, epochs=args.epochs, lr=args.lr, device=device, batch_size=args.batchsize)
     
         
-    model_eval = Unet(n_channels=2, n_classes=1)
+    model_eval = Unet(n_channels=3, n_classes=1)
     model_eval.load_state_dict(torch.load(dir_checkpoint+args.load))
     model_eval.to(device=device)
-    eval_net(model=model_eval,body_array_new=test_data, device=device)
+    eval_net(model=model_eval,body_array_new=test_data, maps_list=maps, device=device)
     
    
